@@ -167,6 +167,8 @@ Every interaction must record (JSONL or SQLite):
 - No "opportunistic refactors" unless explicitly in PRD scope
 
 
+---
+
 ## Codex Cloud Loop (GitHub, No OpenAI API Key)
 
 ### Why this exists
