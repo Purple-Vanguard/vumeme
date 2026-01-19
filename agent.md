@@ -166,6 +166,7 @@ Every interaction must record (JSONL or SQLite):
 - One dimension per round (frontend OR backend OR logging OR LLM OR TTS OR assets)
 - No "opportunistic refactors" unless explicitly in PRD scope
 
+---
 
 ## Codex Cloud Loop (GitHub, No OpenAI API Key)
 
