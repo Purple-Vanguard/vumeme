@@ -165,3 +165,36 @@ Every interaction must record (JSONL or SQLite):
 - Prefer ≤ 5 files changed (or ≤ 400 net LOC) per PR; otherwise split PRD
 - One dimension per round (frontend OR backend OR logging OR LLM OR TTS OR assets)
 - No "opportunistic refactors" unless explicitly in PRD scope
+
+
+## Codex Cloud Loop (GitHub, No OpenAI API Key)
+
+### Why this exists
+We run Codex via the GitHub integration (cloud tasks) to avoid using `OPENAI_API_KEY` in CI.
+Codex is triggered by PR comments that mention `@codex`. Anything other than `@codex review` starts a cloud task.  
+
+### Source of truth for the loop
+- Backlog state machine: `prd/index.md`
+  - Next work item is the first `[TODO]` in the MVP path: PRD-00 → PRD-06.
+- Short-term log: `process.txt`
+  - Used for recording what happened (Goal / shipped / acceptance / lessons / next).
+  - Do not rely on humans manually editing NEXT_PRD/NEXT_MODE.
+
+### One PRD = one PR
+For every PRD implementation PR:
+1) Implement ONLY the PRD “In Scope”.
+2) Run the PRD Test Steps and report results in the PR description.
+3) Update `prd/index.md`:
+   - Mark the PRD as `[DONE]`.
+4) Update `process.txt`:
+   - Append one new round block with Goal / What shipped / Acceptance / Lessons / Next.
+   - Optionally update machine fields, but the canonical scheduler is `prd/index.md`.
+
+### Repair loop (bugfix inside the same PR)
+- If CI fails or review requests changes:
+  - Prefer fixing within the same PR (multiple commits are OK).
+  - Reviewer can comment: `@codex fix only what is required to satisfy this PRD acceptance criteria and CI`.
+- If fixes exceed scope/size, create a new PRD (e.g., PRD-02B Bugfix) instead of scope creep.
+
+### Merge policy
+All Codex PRs must be merged via normal review process (no direct pushes to `interactive_chain`).
