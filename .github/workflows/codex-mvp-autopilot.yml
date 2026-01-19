@@ -1,0 +1,327 @@
+name: Codex MVP Autopilot (No API Key, No Human Approval)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "*/10 * * * *" # every 10 minutes
+  workflow_dispatch: {}
+
+concurrency:
+  group: codex-mvp-autopilot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: read
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pause switch
+        run: |
+          if [ -f CODEX_PAUSE ]; then
+            echo "CODEX_PAUSE present. Exiting."
+            exit 0
+          fi
+
+      - name: Codex MVP loop (dispatch / fix / merge)
+        uses: actions/github-script@v7
+        env:
+          CODEX_DRIVER_PR: ${{ vars.CODEX_DRIVER_PR }}
+          CODEX_BASE_BRANCH: ${{ vars.CODEX_BASE_BRANCH }}
+          MAX_FIX_ATTEMPTS: "8"
+          DISPATCH_COOLDOWN_MINUTES: "30"
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const baseBranch = process.env.CODEX_BASE_BRANCH || "main";
+            const driverPr = Number(process.env.CODEX_DRIVER_PR || "");
+            if (!driverPr) {
+              core.setFailed("Missing CODEX_DRIVER_PR repo variable (the always-open driver PR number).");
+              return;
+            }
+
+            const MAX_FIX_ATTEMPTS = Number(process.env.MAX_FIX_ATTEMPTS || "8");
+            const DISPATCH_COOLDOWN_MINUTES = Number(process.env.DISPATCH_COOLDOWN_MINUTES || "30");
+
+            const MVP_ORDER = ["00","01","02","03","04","05","06"]; // your MVP path
+
+            const MARKER = "<!-- CODEX_AUTOPILOT -->";
+
+            function minutesAgo(iso) {
+              const then = new Date(iso).getTime();
+              const now = Date.now();
+              return (now - then) / 60000;
+            }
+
+            async function listOpenCodexPRs() {
+              const prs = await github.rest.pulls.list({
+                owner, repo,
+                state: "open",
+                base: baseBranch,
+                per_page: 100,
+              });
+              return prs.data.filter(pr => (pr.head.ref || "").startsWith("codex/"));
+            }
+
+            async function getCheckSummary(sha) {
+              // check-runs API (may be empty if no CI)
+              const res = await github.rest.checks.listForRef({
+                owner, repo,
+                ref: sha,
+                per_page: 100,
+              });
+              const runs = res.data.check_runs || [];
+              // consider only completed runs
+              const completed = runs.filter(r => r.status === "completed");
+              const anyFailed = completed.some(r =>
+                ["failure", "cancelled", "timed_out", "action_required", "stale"].includes(r.conclusion)
+              );
+              const anyInProgress = runs.some(r => r.status !== "completed");
+              const allSuccess = completed.length > 0 && completed.every(r => r.conclusion === "success");
+              return { runs, completed, anyFailed, anyInProgress, allSuccess };
+            }
+
+            async function getMergeable(prNumber) {
+              // mergeable may be null initially; poll a bit
+              for (let i = 0; i < 6; i++) {
+                const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+                if (pr.data.mergeable !== null) return pr.data.mergeable;
+                await new Promise(r => setTimeout(r, 1500));
+              }
+              const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+              return pr.data.mergeable; // may still be null
+            }
+
+            async function listComments(issueNumber) {
+              const res = await github.rest.issues.listComments({
+                owner, repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+              return res.data;
+            }
+
+            function parseLastFixAttempt(comments) {
+              // Find last fix-attempt marker comment and extract sha
+              const fixes = comments
+                .filter(c => (c.body || "").includes(MARKER) && (c.body || "").includes("fix-attempt"))
+                .sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+              if (fixes.length === 0) return { count: 0, lastSha: null, lastCreatedAt: null };
+              const last = fixes[fixes.length - 1];
+              const m = (last.body || "").match(/sha:\s*([0-9a-f]{7,40})/i);
+              return { count: fixes.length, lastSha: m ? m[1] : null, lastCreatedAt: last.created_at };
+            }
+
+            function parseLastDispatch(comments) {
+              const ds = comments
+                .filter(c => (c.body || "").includes(MARKER) && (c.body || "").includes("dispatch"))
+                .sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+              if (ds.length === 0) return null;
+              return ds[ds.length - 1];
+            }
+
+            function pickNextPRD() {
+              const idxPath = path.join(process.cwd(), "prd", "index.md");
+              if (!fs.existsSync(idxPath)) return null;
+              const lines = fs.readFileSync(idxPath, "utf-8").split(/\r?\n/);
+
+              let nextId = null;
+              for (const pid of MVP_ORDER) {
+                const re = new RegExp(`^- \\[TODO\\] PRD-${pid}\\b`);
+                if (lines.some(l => re.test(l))) { nextId = pid; break; }
+              }
+              if (!nextId) return null;
+
+              const prdDir = path.join(process.cwd(), "prd");
+              const files = fs.readdirSync(prdDir).filter(f => f.startsWith(`PRD-${nextId}-`) && f.endsWith(".md"));
+              if (files.length === 0) return { id: `PRD-${nextId}`, file: null };
+              files.sort();
+              return { id: `PRD-${nextId}`, file: `prd/${files[0]}` };
+            }
+
+            async function commentDriverDispatch(prd) {
+              const body = [
+                MARKER,
+                `@codex Implement **${prd.id}** on base branch \`${baseBranch}\`.`,
+                ``,
+                `Rules (must follow):`,
+                `- Read: \`agent.md\`, \`process.txt\`, \`prd/index.md\`, and \`${prd.file}\`.`,
+                `- Implement ONLY the PRD "In Scope".`,
+                `- Run the PRD Test Steps and report results in the PR description.`,
+                `- Update \`prd/index.md\`: mark ${prd.id} as DONE.`,
+                `- Append a new round block to \`process.txt\` (Goal / shipped / acceptance / lessons / next).`,
+                `- Open a NEW PR into \`${baseBranch}\` titled: "Codex: ${prd.id}".`,
+                `- If CI fails, keep fixing within the SAME PR until it passes.`,
+                ``,
+                `dispatch: ${prd.id}`,
+                `time: ${new Date().toISOString()}`
+              ].join("\n");
+
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: driverPr,
+                body,
+              });
+            }
+
+            async function commentFixCI(prNumber, sha, attempt, last) {
+              const body = [
+                MARKER,
+                `@codex Fix ONLY the CI failures for this PR. Do NOT add features. Do NOT refactor unrelated code.`,
+                ``,
+                `fix-attempt: ${attempt}/${MAX_FIX_ATTEMPTS}`,
+                `sha: ${sha}`,
+                last ? `previous-attempt-sha: ${last}` : "",
+                `time: ${new Date().toISOString()}`
+              ].filter(Boolean).join("\n");
+
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+            async function mergePR(pr) {
+              // squash merge; adjust if you prefer merge commit
+              await github.rest.pulls.merge({
+                owner, repo,
+                pull_number: pr.number,
+                merge_method: "squash",
+                commit_title: `Automerge: ${pr.title}`,
+              });
+            }
+
+            async function createStuckIssue(pr, msg) {
+              await github.rest.issues.create({
+                owner, repo,
+                title: `Codex autopilot stuck: PR #${pr.number} (${pr.title})`,
+                body: [
+                  MARKER,
+                  `Autopilot could not progress.`,
+                  ``,
+                  `PR: #${pr.number}`,
+                  `Head: ${pr.head.ref} @ ${pr.head.sha}`,
+                  ``,
+                  msg,
+                  ``,
+                  `Recommended action: add CODEX_PAUSE file to stop the loop, then inspect.`
+                ].join("\n"),
+              });
+            }
+
+            // === Main loop ===
+            const codexPRs = await listOpenCodexPRs();
+
+            if (codexPRs.length > 1) {
+              await createStuckIssue(codexPRs[0], `Multiple open codex/* PRs detected (${codexPRs.length}). Autopilot requires at most 1 at a time.`);
+              core.warning(`Multiple open codex PRs (${codexPRs.length}); exiting.`);
+              return;
+            }
+
+            if (codexPRs.length === 1) {
+              const pr = codexPRs[0];
+
+              // Check runs status
+              const checks = await getCheckSummary(pr.head.sha);
+
+              // If CI failing -> ask Codex to fix (multi-round)
+              if (checks.anyFailed) {
+                const comments = await listComments(pr.number);
+                const { count, lastSha } = parseLastFixAttempt(comments);
+
+                // Avoid spamming: if last attempt was for same SHA, wait for Codex to push updates
+                if (lastSha && lastSha.startsWith(pr.head.sha.substring(0, Math.min(lastSha.length, pr.head.sha.length)))) {
+                  core.info(`CI failing but already requested fix for current SHA. Waiting.`);
+                  return;
+                }
+
+                if (count >= MAX_FIX_ATTEMPTS) {
+                  await createStuckIssue(pr, `Exceeded MAX_FIX_ATTEMPTS (${MAX_FIX_ATTEMPTS}) while CI keeps failing. Last SHA: ${pr.head.sha}`);
+                  core.warning(`Exceeded fix attempts for PR #${pr.number}.`);
+                  return;
+                }
+
+                await commentFixCI(pr.number, pr.head.sha, count + 1, lastSha);
+                core.info(`Requested Codex to fix CI for PR #${pr.number}.`);
+                return;
+              }
+
+              // If CI in progress -> do nothing
+              if (checks.anyInProgress) {
+                core.info(`CI in progress for PR #${pr.number}. Waiting.`);
+                return;
+              }
+
+              // If CI success OR no CI at all -> try merge
+              const mergeable = await getMergeable(pr.number);
+              if (mergeable === false) {
+                await createStuckIssue(pr, `PR is not mergeable (conflicts). Ask Codex to resolve conflicts or rebase.`);
+                // trigger Codex to resolve conflicts
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: pr.number,
+                  body: [
+                    MARKER,
+                    `@codex Resolve merge conflicts ONLY for this PR. Do not change scope. Rebase/merge onto ${baseBranch} as needed.`,
+                    `sha: ${pr.head.sha}`,
+                    `time: ${new Date().toISOString()}`
+                  ].join("\n")
+                });
+                return;
+              }
+
+              // mergeable may be null (GitHub not computed), try merge anyway; if fails, next tick will retry
+              try {
+                await mergePR(pr);
+                core.info(`Merged PR #${pr.number}. Next tick will dispatch next PRD.`);
+              } catch (e) {
+                core.warning(`Merge attempt failed for PR #${pr.number}: ${e.message}`);
+              }
+              return;
+            }
+
+            // No open codex PR: possibly dispatch next PRD, but avoid duplicate dispatch spam
+            const prd = pickNextPRD();
+            if (!prd) {
+              core.info("No TODO PRD in MVP path (00-06). MVP loop complete.");
+              return;
+            }
+            if (!prd.file) {
+              await github.rest.issues.create({
+                owner, repo,
+                title: `Codex autopilot error: missing PRD file for ${prd.id}`,
+                body: `${MARKER}\nCould not find a prd/PRD-${prd.id}-*.md file. Fix prd directory.`,
+              });
+              return;
+            }
+
+            const driverComments = await listComments(driverPr);
+            const lastDispatch = parseLastDispatch(driverComments);
+            if (lastDispatch) {
+              const ageMin = minutesAgo(lastDispatch.created_at);
+              // If we dispatched recently and still no codex PR, wait (Codex task may be running)
+              if (ageMin < DISPATCH_COOLDOWN_MINUTES) {
+                core.info(`Last dispatch was ${ageMin.toFixed(1)} min ago; cooling down.`);
+                return;
+              }
+            }
+
+            await commentDriverDispatch(prd);
+            core.info(`Dispatched ${prd.id} to Codex via driver PR #${driverPr}.`);
