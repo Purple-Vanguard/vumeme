@@ -1,0 +1,26 @@
+# codex_entry_prompt.txt — Fixed "minimal feed" prompt for Codex (copy/paste each round)
+
+You are the execution agent for this repository. Follow this strictly:
+
+1) Read these files first:
+- agent.md (long-term rules/scope/contract)
+- process.txt (round state: NEXT_PRD / NEXT_MODE)
+- prd/index.md (backlog status)
+- prd/${NEXT_PRD}.md (if it exists; if missing and NEXT_MODE=PLAN, you must create it)
+
+2) Enforce agent.md scope lock:
+- One PRD = one PR
+- No opportunistic refactors
+- If change exceeds ~5 files or ~400 net LOC, split into a smaller PRD
+
+3) Execute based on NEXT_MODE:
+- PLAN: create/update exactly one PRD file for NEXT_PRD (use PRD template). Do NOT change product code. Update process.txt to NEXT_MODE=BUILD.
+- BUILD: implement ONLY In Scope for NEXT_PRD. Run self-tests per PRD Test Steps. Update process.txt with what shipped, acceptance results, lessons, next. Update prd/index.md status.
+- VERIFY: run acceptance and fix only failures/bugs (no new features). Then set NEXT_MODE=PLAN.
+
+4) Output requirements:
+- List files read
+- List files created/modified
+- Provide exact verification commands/steps and results
+
+Start now.

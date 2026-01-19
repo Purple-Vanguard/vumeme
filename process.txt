@@ -1,0 +1,34 @@
+# process.txt — Short-Term Memory (Round State)
+
+# Machine-readable fields (Codex/Ralph must read first)
+CURRENT_ROUND=R-20260119-0000
+LAST_PRD=
+LAST_STATUS=
+NEXT_PRD=PRD-00
+NEXT_MODE=PLAN   # PLAN | BUILD | VERIFY
+BLOCKERS=
+NOTES=
+
+============================================================
+# Human Notes (append/update one block per round)
+
+[Round] R-20260119-0000
+[PRD] (pending)
+[Status] (pending)
+
+## Goal
+- (pending)
+
+## What shipped
+- (pending)
+
+## Acceptance results
+- (pending)
+
+## Lessons learned
+- (pending)
+
+## Next
+- NEXT_PRD=PRD-00
+- NEXT_MODE=PLAN
+============================================================
