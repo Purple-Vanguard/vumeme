@@ -1,9 +1,9 @@
-name: Codex MVP Autopilot (No PAT for GitHub API)
+name: Codex MVP Autopilot (GITHUB_TOKEN only)
 
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "*/10 * * * *" # keep as-is for now
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: codex-mvp-autopilot
@@ -37,9 +37,7 @@ jobs:
           CODEX_BASE_BRANCH: ${{ vars.CODEX_BASE_BRANCH }}
           MAX_FIX_ATTEMPTS: "8"
           DISPATCH_COOLDOWN_MINUTES: "30"
-          STUCK_AFTER_MINUTES: "90"
         with:
-          # IMPORTANT: use GitHub Actions token (NOT a PAT)
           github-token: ${{ github.token }}
           script: |
             const fs = require("fs");
@@ -51,21 +49,18 @@ jobs:
             const baseBranch = process.env.CODEX_BASE_BRANCH || "main";
             const driverPr = Number(process.env.CODEX_DRIVER_PR || "");
             if (!driverPr) {
-              core.setFailed("Missing CODEX_DRIVER_PR repo variable (the always-open driver PR number).");
+              core.setFailed("Missing CODEX_DRIVER_PR repo variable.");
               return;
             }
 
             const MAX_FIX_ATTEMPTS = Number(process.env.MAX_FIX_ATTEMPTS || "8");
             const DISPATCH_COOLDOWN_MINUTES = Number(process.env.DISPATCH_COOLDOWN_MINUTES || "30");
-            const STUCK_AFTER_MINUTES = Number(process.env.STUCK_AFTER_MINUTES || "90");
 
             const MVP_ORDER = ["00","01","02","03","04","05","06"];
             const MARKER = "<!-- CODEX_AUTOPILOT -->";
 
             function minutesAgo(iso) {
-              const then = new Date(iso).getTime();
-              const now = Date.now();
-              return (now - then) / 60000;
+              return (Date.now() - new Date(iso).getTime()) / 60000;
             }
 
             async function listOpenCodexPRs() {
@@ -80,18 +75,15 @@ jobs:
 
             async function getCheckSummary(sha) {
               const res = await github.rest.checks.listForRef({
-                owner, repo,
-                ref: sha,
-                per_page: 100,
+                owner, repo, ref: sha, per_page: 100,
               });
               const runs = res.data.check_runs || [];
               const completed = runs.filter(r => r.status === "completed");
               const anyFailed = completed.some(r =>
-                ["failure", "cancelled", "timed_out", "action_required", "stale"].includes(r.conclusion)
+                ["failure","cancelled","timed_out","action_required","stale"].includes(r.conclusion)
               );
               const anyInProgress = runs.some(r => r.status !== "completed");
-              const allSuccess = completed.length > 0 && completed.every(r => r.conclusion === "success");
-              return { runs, completed, anyFailed, anyInProgress, allSuccess };
+              return { anyFailed, anyInProgress, completed };
             }
 
             async function getMergeable(prNumber) {
@@ -106,9 +98,7 @@ jobs:
 
             async function listComments(issueNumber) {
               const res = await github.rest.issues.listComments({
-                owner, repo,
-                issue_number: issueNumber,
-                per_page: 100,
+                owner, repo, issue_number: issueNumber, per_page: 100,
               });
               return res.data;
             }
@@ -117,37 +107,17 @@ jobs:
               const fixes = comments
                 .filter(c => (c.body || "").includes(MARKER) && (c.body || "").includes("fix-attempt"))
                 .sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
-              if (fixes.length === 0) return { count: 0, lastSha: null, lastCreatedAt: null };
+              if (fixes.length === 0) return { count: 0, lastSha: null };
               const last = fixes[fixes.length - 1];
               const m = (last.body || "").match(/sha:\s*([0-9a-f]{7,40})/i);
-              return { count: fixes.length, lastSha: m ? m[1] : null, lastCreatedAt: last.created_at };
+              return { count: fixes.length, lastSha: m ? m[1] : null };
             }
 
             function parseLastDispatch(comments) {
               const ds = comments
                 .filter(c => (c.body || "").includes(MARKER) && (c.body || "").includes("dispatch:"))
                 .sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
-              if (ds.length === 0) return null;
-              const last = ds[ds.length - 1];
-              const m = (last.body || "").match(/dispatch:\s*(PRD-\d+)/i);
-              return { comment: last, prdId: m ? m[1] : null };
-            }
-
-            function hasCodexAckAfter(comments, sinceIso) {
-              const since = new Date(sinceIso).getTime();
-              return comments.some(c => {
-                const t = new Date(c.created_at).getTime();
-                if (t <= since) return false;
-                const login = (c.user && c.user.login) ? c.user.login : "";
-                const body = c.body || "";
-                // adjust these heuristics to your actual bot login/body patterns
-                return (
-                  login.includes("codex") ||
-                  login.includes("chatgpt-codex-connector") ||
-                  body.includes("View task") ||
-                  body.includes("Summary")
-                );
-              });
+              return ds.length ? ds[ds.length - 1] : null;
             }
 
             function pickNextPRD() {
@@ -164,7 +134,6 @@ jobs:
 
               const prdDir = path.join(process.cwd(), "prd");
               const files = fs.readdirSync(prdDir).filter(f => f.startsWith(`PRD-${nextId}-`) && f.endsWith(".md"));
-              if (files.length === 0) return { id: `PRD-${nextId}`, file: null };
               files.sort();
               return { id: `PRD-${nextId}`, file: `prd/${files[0]}` };
             }
@@ -179,9 +148,9 @@ jobs:
                 `- Implement ONLY the PRD "In Scope".`,
                 `- Run the PRD Test Steps and report results in the PR description.`,
                 `- Update \`prd/index.md\`: mark ${prd.id} as DONE.`,
-                `- Append a new round block to \`process.txt\` (Goal / shipped / acceptance / lessons / next).`,
+                `- Append a new round block to \`process.txt\`.`,
                 `- Open a NEW PR into \`${baseBranch}\` titled: "Codex: ${prd.id}".`,
-                `- Use a head branch starting with \`codex/\` (required by autopilot).`,
+                `- Head branch MUST start with \`codex/\`.`,
                 `- If CI fails, keep fixing within the SAME PR until it passes.`,
                 ``,
                 `dispatch: ${prd.id}`,
@@ -189,16 +158,14 @@ jobs:
               ].join("\n");
 
               await github.rest.issues.createComment({
-                owner, repo,
-                issue_number: driverPr,
-                body,
+                owner, repo, issue_number: driverPr, body,
               });
             }
 
             async function commentFixCI(prNumber, sha, attempt, last) {
               const body = [
                 MARKER,
-                `@codex Fix ONLY the CI failures for this PR. Do NOT add features. Do NOT refactor unrelated code.`,
+                `@codex Fix ONLY the CI failures for this PR. Do NOT add features.`,
                 ``,
                 `fix-attempt: ${attempt}/${MAX_FIX_ATTEMPTS}`,
                 `sha: ${sha}`,
@@ -207,9 +174,7 @@ jobs:
               ].filter(Boolean).join("\n");
 
               await github.rest.issues.createComment({
-                owner, repo,
-                issue_number: prNumber,
-                body,
+                owner, repo, issue_number: prNumber, body,
               });
             }
 
@@ -222,29 +187,8 @@ jobs:
               });
             }
 
-            async function ensureStuckIssueOnce(title, body) {
-              const q = `repo:${owner}/${repo} is:issue is:open "${title.replace(/"/g,'\\"')}"`;
-              const res = await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
-              if ((res.data.items || []).length > 0) return;
-
-              await github.rest.issues.create({
-                owner, repo,
-                title,
-                body: [MARKER, body].join("\n"),
-              });
-            }
-
             // === Main loop ===
             const codexPRs = await listOpenCodexPRs();
-
-            if (codexPRs.length > 1) {
-              await ensureStuckIssueOnce(
-                `Codex autopilot stuck: multiple codex/* PRs`,
-                `Found ${codexPRs.length} open PRs whose head starts with codex/. Autopilot requires at most 1 at a time.`
-              );
-              core.warning(`Multiple open codex PRs (${codexPRs.length}); exiting.`);
-              return;
-            }
 
             if (codexPRs.length === 1) {
               const pr = codexPRs[0];
@@ -254,89 +198,49 @@ jobs:
                 const comments = await listComments(pr.number);
                 const { count, lastSha } = parseLastFixAttempt(comments);
 
-                if (lastSha && lastSha.startsWith(pr.head.sha.substring(0, Math.min(lastSha.length, pr.head.sha.length)))) {
-                  core.info(`CI failing but already requested fix for current SHA. Waiting.`);
+                if (lastSha && lastSha.startsWith(pr.head.sha.slice(0, Math.min(lastSha.length, pr.head.sha.length)))) {
+                  core.info("Already requested fix for current SHA. Waiting.");
                   return;
                 }
-
                 if (count >= MAX_FIX_ATTEMPTS) {
-                  await ensureStuckIssueOnce(
-                    `Codex autopilot stuck: exceeded fix attempts`,
-                    `PR #${pr.number} keeps failing CI after ${MAX_FIX_ATTEMPTS} fix attempts. Head SHA: ${pr.head.sha}`
-                  );
+                  core.warning("Exceeded MAX_FIX_ATTEMPTS. Stopping.");
                   return;
                 }
-
                 await commentFixCI(pr.number, pr.head.sha, count + 1, lastSha);
-                core.info(`Requested Codex to fix CI for PR #${pr.number}.`);
                 return;
               }
 
-              if (checks.anyInProgress) {
-                core.info(`CI in progress for PR #${pr.number}. Waiting.`);
-                return;
-              }
+              if (checks.anyInProgress) return;
 
               const mergeable = await getMergeable(pr.number);
-              if (mergeable === false) {
-                await github.rest.issues.createComment({
-                  owner, repo,
-                  issue_number: pr.number,
-                  body: [
-                    MARKER,
-                    `@codex Resolve merge conflicts ONLY for this PR. Do not change scope. Rebase/merge onto ${baseBranch} as needed.`,
-                    `sha: ${pr.head.sha}`,
-                    `time: ${new Date().toISOString()}`
-                  ].join("\n")
-                });
-                return;
-              }
+              if (mergeable === false) return;
 
-              try {
-                await mergePR(pr);
-                core.info(`Merged PR #${pr.number}. Next tick will dispatch next PRD.`);
-              } catch (e) {
-                core.warning(`Merge attempt failed for PR #${pr.number}: ${e.message}`);
-              }
+              await mergePR(pr);
+              core.info(`Merged PR #${pr.number}.`);
               return;
             }
 
-            // No open codex PR -> maybe dispatch next PRD
+            if (codexPRs.length > 1) {
+              core.warning("Multiple codex/* PRs open; stopping.");
+              return;
+            }
+
+            // No open codex PR => dispatch next PRD (with cooldown)
             const prd = pickNextPRD();
             if (!prd) {
-              core.info("No TODO PRD in MVP path (00-06). MVP loop complete.");
-              return;
-            }
-            if (!prd.file) {
-              await ensureStuckIssueOnce(
-                `Codex autopilot error: missing PRD file for ${prd.id}`,
-                `Could not find a prd/PRD-${prd.id}-*.md file. Fix prd directory.`
-              );
+              core.info("No TODO PRDs left. Done.");
               return;
             }
 
             const driverComments = await listComments(driverPr);
             const lastDispatch = parseLastDispatch(driverComments);
-
             if (lastDispatch) {
-              const ageMin = minutesAgo(lastDispatch.comment.created_at);
-
+              const ageMin = minutesAgo(lastDispatch.created_at);
               if (ageMin < DISPATCH_COOLDOWN_MINUTES) {
-                core.info(`Last dispatch was ${ageMin.toFixed(1)} min ago; cooling down.`);
-                return;
-              }
-
-              // If Codex already acknowledged the dispatch but no codex/* PR appeared for too long -> stuck
-              const acked = hasCodexAckAfter(driverComments, lastDispatch.comment.created_at);
-              if (acked && ageMin >= STUCK_AFTER_MINUTES) {
-                await ensureStuckIssueOnce(
-                  `Codex autopilot stuck: no codex PR after ${lastDispatch.prdId || "dispatch"}`,
-                  `Codex acknowledged the last dispatch (${lastDispatch.prdId || "unknown"}) but no PR with head \`codex/*\` was opened into \`${baseBranch}\` after ${ageMin.toFixed(0)} minutes.\n\nCheck Codex GitHub integration write access, repo visibility, and that Codex is allowed to create branches/PRs.`
-                );
-                core.warning("Stuck: acked but no codex PR. Not dispatching again.");
+                core.info(`Cooling down (${ageMin.toFixed(1)} min).`);
                 return;
               }
             }
 
             await commentDriverDispatch(prd);
-            core.info(`Dispatched ${prd.id} to Codex via driver PR #${driverPr}.`);
+            core.info(`Dispatched ${prd.id} via driver PR #${driverPr}.`);
