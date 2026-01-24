@@ -1,0 +1,7 @@
+{
+  "name": "vumeme",
+  "private": true,
+  "scripts": {
+    "dev": "node backend/server.js"
+  }
+}

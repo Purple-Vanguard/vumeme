@@ -1,10 +1,10 @@
 # process.txt — Short-Term Memory (Round State)
 
 # Machine-readable fields (Codex/Ralph must read first)
-CURRENT_ROUND=R-20260119-0000
-LAST_PRD=
-LAST_STATUS=
-NEXT_PRD=PRD-00
+CURRENT_ROUND=R-20260124-0001
+LAST_PRD=PRD-00
+LAST_STATUS=DONE
+NEXT_PRD=PRD-01
 NEXT_MODE=PLAN   # PLAN | BUILD | VERIFY
 BLOCKERS=
 NOTES=
@@ -30,5 +30,28 @@ NOTES=
 
 ## Next
 - NEXT_PRD=PRD-00
+- NEXT_MODE=PLAN
+============================================================
+
+[Round] R-20260124-0001
+[PRD] PRD-00
+[Status] DONE
+
+## Goal
+- Bootstrap the repo with a one-command dev start and visible health check.
+
+## What shipped
+- Added backend HTTP server with GET /health and static frontend serving.
+- Built a frontend landing page that calls /health and reports status.
+- Documented the dev start steps and scaffolded repo directories.
+
+## Acceptance results
+- npm run dev serves the frontend, and /health returns {"ok": true}.
+
+## Lessons learned
+- Keep the bootstrap server dependency-free for simpler onboarding.
+
+## Next
+- NEXT_PRD=PRD-01
 - NEXT_MODE=PLAN
 ============================================================
