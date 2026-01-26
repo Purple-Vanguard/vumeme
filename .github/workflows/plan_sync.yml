@@ -1,0 +1,25 @@
+name: Plan Sync (PR Orchestrator)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["docs/plan.yaml", "docs/PRD.md"]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: pip install pyyaml requests
+      - run: python3 .github/scripts/plan_sync.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
