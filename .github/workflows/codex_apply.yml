@@ -59,7 +59,7 @@ jobs:
         id: extract
         uses: actions/github-script@v7
         env:
-          CODEX_BOT_LOGIN: codex
+          CODEX_BOT_LOGINS: codex,chatgpt-codex-connector
           MODE_HAS_AUTOPILOT: ${{ steps.labels.outputs.has_autopilot }}
         with:
           script: |
@@ -67,12 +67,19 @@ jobs:
             const prNumber = context.payload.issue.number;
             const body = context.payload.comment.body || "";
             const isManual = body.startsWith("/apply");
-            const isFromCodex = (context.payload.comment.user?.login || "") === process.env.CODEX_BOT_LOGIN;
+            const botLogins = (process.env.CODEX_BOT_LOGINS || "codex")
+              .split(",")
+              .map(s => s.trim())
+              .filter(Boolean);
+            const authorLogin = (context.payload.comment.user?.login || "");
+            const isFromCodexBot = botLogins.includes(authorLogin);
 
             // Decide whether to run:
             // - manual: /apply
             // - autopilot: codex bot posted diff AND PR labeled codex:autopilot
             const shouldRun = isManual || (isFromCodex && process.env.MODE_HAS_AUTOPILOT === "true");
+            const shouldRun = isManual || (isFromCodexBot && process.env.MODE_HAS_AUTOPILOT === "true");
+
             if (!shouldRun) {
               core.setOutput("skip", "true");
               return;
@@ -85,24 +92,35 @@ jobs:
 
             const diffRe = /```(?:diff|patch)\n([\s\S]*?)```/m;
 
-            const codexLogin = process.env.CODEX_BOT_LOGIN;
+            // const codexLogin = process.env.CODEX_BOT_LOGIN;
             let target = null;
 
-            if (isFromCodex && diffRe.test(body)) {
+            // If current comment already contains a diff/patch block, apply it (manual or bot)
+            if (diffRe.test(body)) {
               target = context.payload.comment; // current comment
             } else {
               for (let i = comments.length - 1; i >= 0; i--) {
                 const c = comments[i];
-                if ((c.user?.login || "") !== codexLogin) continue;
                 if (!diffRe.test(c.body || "")) continue;
+                // Manual /apply: accept latest diff from ANY author (already gated by collaborator check)
+                if (isManual) {
+                  target = c;
+                  break;
+                }
+                // Autopilot: accept only from codex bot identities
+                if (!botLogins.includes(c.user?.login || "")) continue;
                 target = c;
                 break;
               }
             }
 
             if (!target) {
-              throw new Error("No Codex diff block found.");
-            }
+              // Manual apply should fail loudly; autopilot should just skip quietly.
+              if (isManual) {
+                throw new Error("No ```diff```/```patch``` block found to apply. Ask Codex to output a unified diff.");
+              }
+              core.setOutput("skip", "true");
+              return;            }
 
             const m = (target.body || "").match(diffRe);
             const patch = m ? m[1] : "";
@@ -150,7 +168,7 @@ jobs:
             const prNumber = context.payload.issue.number;
             await github.rest.issues.createComment({
               owner, repo, issue_number: prNumber,
-              body: `✅ Applied Codex patch and pushed commits.\n\n- Codex comment: ${{ steps.extract.outputs.codex_comment_url }}\n- Head: \`${{ steps.pr.outputs.head_ref }}\``
+              body: `✅ Applied patch and pushed commits.\n\n- Patch source: ${{ steps.extract.outputs.codex_comment_url }}\n- Head: \`${{ steps.pr.outputs.head_ref }}\``
             });
 
       - name: On failure, post logs hinting Codex to iterate
