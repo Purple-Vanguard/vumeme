@@ -16,5 +16,12 @@ You are Codex operating on this repository.
 - Append a round summary block to process.txt.
 - If CI fails, fix within the same PR unless it becomes a new PRD-sized change.
 
-## Output discipline
-- Always list: files changed, commands run, and results.
+## Output format (mandatory)
+When responding in GitHub PR comments:
+- Output EXACTLY ONE unified diff in a single ```diff block.
+- Do not include Summary / Files Changed / Commands Run / Testing sections.
+- If you cannot run installs, still produce the diff that implements the change.
+
+## Constraints
+- Avoid introducing new dependencies if npm install is blocked in your environment.
+- Prefer Node built-in http for backend and static files for frontend in PRD-00.
